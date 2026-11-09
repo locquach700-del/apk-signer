@@ -1,0 +1,94 @@
+name: Sign APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: 'Direct download URL của APK (để trống nếu upload vào repo)'
+        required: false
+        default: ''
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Setup Android SDK build-tools ─────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools 34
+        run: |
+          sdkmanager "build-tools;34.0.0" --sdk_root=$ANDROID_HOME
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_PATH
+
+      # ── Lấy APK ──────────────────────────────────────────────────────────
+      - name: Lấy APK từ URL
+        if: ${{ github.event.inputs.apk_url != '' }}
+        run: |
+          curl -L "${{ github.event.inputs.apk_url }}" -o input.apk
+          echo "Downloaded: $(du -sh input.apk)"
+
+      - name: Lấy APK từ repo
+        if: ${{ github.event.inputs.apk_url == '' }}
+        run: |
+          APK=$(find . -maxdepth 3 -name "*.apk" ! -name "signed*" | head -1)
+          if [ -z "$APK" ]; then
+            echo "ERROR: Không tìm thấy .apk trong repo"
+            exit 1
+          fi
+          cp "$APK" input.apk
+          echo "Using: $APK ($(du -sh input.apk))"
+
+      # ── Zipalign ─────────────────────────────────────────────────────────
+      - name: Zipalign
+        run: |
+          zipalign -v -p 4 input.apk aligned.apk
+          zipalign -c -v 4 aligned.apk && echo "Align verified OK"
+
+      # ── Tạo keystore ─────────────────────────────────────────────────────
+      - name: Tạo keystore RSA-2048
+        run: |
+          keytool -genkeypair \
+            -keystore release.keystore \
+            -alias release \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=Build,O=Dev,C=VN" \
+            -noprompt
+          echo "Keystore OK"
+
+      # ── Ký v1 + v2 + v3 ──────────────────────────────────────────────────
+      - name: Sign APK
+        run: |
+          apksigner sign \
+            --ks release.keystore \
+            --ks-key-alias release \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out signed.apk \
+            aligned.apk
+
+      # ── Verify ───────────────────────────────────────────────────────────
+      - name: Verify
+        run: |
+          apksigner verify --verbose --print-certs signed.apk
+          echo "Final size: $(du -sh signed.apk)"
+
+      # ── Download artifact ─────────────────────────────────────────────────
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-apk
+          path: signed.apk
+          retention-days: 7
