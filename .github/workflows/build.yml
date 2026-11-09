@@ -16,16 +16,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Setup Android SDK build-tools ─────────────────────────────────────
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install build-tools 34
+      # SDK build-tools đã có sẵn trên runner, không cần setup-android
+      - name: Tìm build-tools
         run: |
-          sdkmanager "build-tools;34.0.0" --sdk_root=$ANDROID_HOME
-          echo "$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_PATH
+          BTOOLS="$ANDROID_HOME/build-tools"
+          LATEST=$(ls "$BTOOLS" | sort -V | tail -1)
+          echo "BUILD_TOOLS=$BTOOLS/$LATEST" >> $GITHUB_ENV
+          echo "Using build-tools: $LATEST"
+          ls "$BTOOLS/$LATEST" | grep -E "zipalign|apksigner"
 
-      # ── Lấy APK ──────────────────────────────────────────────────────────
+      # ── Lấy APK ────────────────────────────────────────────────────────
       - name: Lấy APK từ URL
         if: ${{ github.event.inputs.apk_url != '' }}
         run: |
@@ -35,21 +35,21 @@ jobs:
       - name: Lấy APK từ repo
         if: ${{ github.event.inputs.apk_url == '' }}
         run: |
-          APK=$(find . -maxdepth 3 -name "*.apk" ! -name "signed*" | head -1)
+          APK=$(find . -maxdepth 3 -name "*.apk" ! -name "signed*" ! -name "aligned*" | head -1)
           if [ -z "$APK" ]; then
             echo "ERROR: Không tìm thấy .apk trong repo"
             exit 1
           fi
           cp "$APK" input.apk
-          echo "Using: $APK ($(du -sh input.apk))"
+          echo "Using: $APK  ($(du -sh input.apk))"
 
-      # ── Zipalign ─────────────────────────────────────────────────────────
+      # ── Zipalign ───────────────────────────────────────────────────────
       - name: Zipalign
         run: |
-          zipalign -v -p 4 input.apk aligned.apk
-          zipalign -c -v 4 aligned.apk && echo "Align verified OK"
+          "$BUILD_TOOLS/zipalign" -v -p 4 input.apk aligned.apk
+          "$BUILD_TOOLS/zipalign" -c -v 4 aligned.apk && echo "Align OK"
 
-      # ── Tạo keystore ─────────────────────────────────────────────────────
+      # ── Keystore ───────────────────────────────────────────────────────
       - name: Tạo keystore RSA-2048
         run: |
           keytool -genkeypair \
@@ -64,10 +64,10 @@ jobs:
             -noprompt
           echo "Keystore OK"
 
-      # ── Ký v1 + v2 + v3 ──────────────────────────────────────────────────
+      # ── Sign v1 + v2 + v3 ─────────────────────────────────────────────
       - name: Sign APK
         run: |
-          apksigner sign \
+          "$BUILD_TOOLS/apksigner" sign \
             --ks release.keystore \
             --ks-key-alias release \
             --ks-pass pass:android \
@@ -79,13 +79,13 @@ jobs:
             --out signed.apk \
             aligned.apk
 
-      # ── Verify ───────────────────────────────────────────────────────────
-      - name: Verify
+      # ── Verify ─────────────────────────────────────────────────────────
+      - name: Verify signature
         run: |
-          apksigner verify --verbose --print-certs signed.apk
-          echo "Final size: $(du -sh signed.apk)"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs signed.apk
+          echo "Size: $(du -sh signed.apk)"
 
-      # ── Download artifact ─────────────────────────────────────────────────
+      # ── Upload ─────────────────────────────────────────────────────────
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
